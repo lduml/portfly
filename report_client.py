@@ -125,7 +125,7 @@ if __name__ == '__main__':
         so.sendall(cx(str(args.x).encode()) + b'\n')
         rf = so.makefile('rb')
         if dx(rf.readline().strip()) == magic_breply:
-            log.info('Connect server %s ok, port %s is ready.',
+            log.warning('Connect server %s ok, port %s is ready.',
                                                     serv_ip, pub_port)
         else:
             raise ValueError('magic_breply is not match')
