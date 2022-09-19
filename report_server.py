@@ -81,7 +81,8 @@ def report_tserv(so, tserv, port):
         except Exception as e:
             log.error('Exception [%d]: %s', port, str(e))
             log.exception(e)
-            [close_so(s) for s in sodict.values()]
+            for s in sodict.values():
+                close_so(s)
             break
     # while end
     close_so(tserv)
