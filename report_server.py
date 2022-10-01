@@ -53,7 +53,8 @@ def report_tserv(so, tserv, port):
                         log.info('[%d] stream %d is closed by exception',
                                                                 port, _sid)
                         tbsend(so, mngt_prefix+b'sodie', _sid)
-                        close_so(sodict.pop(_sid,None))
+                        close_so(s:=sodict.pop(_sid,None))
+                        ss.remove(s)
                 ss.remove(so)
             # recv from connections
             for sup in ss:
@@ -94,7 +95,7 @@ def report_tserv(so, tserv, port):
 if __name__ == '__main__':
     addr = ('', int(sys.argv[1].strip()))
     serv = socket.create_server(('', int(sys.argv[1].strip())))
-    log.info('Start report_serv at addr %s.', str(addr))
+    log.warning('Start report server at address %s.', str(addr))
     while True:
         so, addr = serv.accept()
         log.warning('Accept from %s.', str(addr))

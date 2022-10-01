@@ -68,7 +68,8 @@ def report_local(taddr, so):
                     except (OSError,KeyError):
                         log.info('stream %d is closed by exception', sid)
                         tbsend(so, mngt_prefix+b'sodie', sid)
-                        close_so(sodict.pop(sid,None))
+                        close_so(s:=sodict.pop(sid,None))
+                        ss.remove(s)
                 ss.remove(so)
             # recv from connections
             for sdn in ss:
