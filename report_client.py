@@ -51,7 +51,7 @@ def report_local(taddr, so):
                                              socket.TCP_NODELAY,True)
                         sodict[sid] = s
                     except OSError as e:
-                        log.error('connect target failed: %s', str(e))
+                        log.error('connect %s failed: %s',str(taddr), str(e))
                         tbsend(so, mngt_prefix+b'sodie', sid)
                 # connection die
                 elif bmsg == mngt_prefix+b'sodie':
