@@ -30,7 +30,8 @@ class trafix():
             except OSError:
                 pass
 
-    def close_remove(self, k, s=None):
+    def clean(self, k, s=None):
+        assert len(self.sdict) == len(self.kdict)
         _s, _ = self.sdict.pop(k, (None,None))
         if s:
             assert s is _s
@@ -97,11 +98,11 @@ class trafix():
         sk, data = self.sdict[k]
         try:
             while True:
+                if len(data) == 0:
+                    break
                 if (i:=sk.send(data[:SK_IO_CHUNK_LEN])) == -1:
                     raise ConnectionError('send_sk_nonblock send -1')
                 data = self.sdict[k][1] = data[i:]
-                if len(data) == 0:
-                    break
         except BlockingIOError:
             pass
 
@@ -118,6 +119,7 @@ class trafix():
         self.sdict = {}    # sid --> socket
         self.kdict = {}    # socket --> sid
         self.sread = []    # sockets ready to be read
+        self.port = port
         # go
         try:
             self.go(port)
@@ -130,14 +132,22 @@ class trafix():
         trafix.close_socket(self.pserv)
         trafix.close_socket(self.sk)
         log.warning('[%d] closed', port)
-            
+
+    def flush(self):
+        self.gen_send.send((None,0))
+        try:
+            for k in self.sdict.keys():
+                self.send_sk_nonblock(k)
+        except OSError:
+            log.info('[%d] sid %d is closed while flush', self.port, k)
+            self.gen_send.send((mngt_prefix+b'sodie',k))
+            self.clean(k)
 
     def go(self, port):
         while True:
-            assert len(self.sdict) == len(self.kdict)
+            self.flush()
             selist = [self.pserv, self.sk] + list(self.kdict.keys())
             self.sread, _, _ = select.select(selist,[],[],1)
-            self.gen_send.send((None,0))
             if len(self.sread) == 0:
                 continue
             # new connections
@@ -146,8 +156,8 @@ class trafix():
                 self.gen_send.send((mngt_prefix+b'gogogo',self.sid))
                 log.info('[%d] accept %s, sid %d', port, str(addr), self.sid)
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-                conn.setblocking(False)        # set nonblocking
-                self.sdict[self.sid] = [conn, b'']  # sid -> [socket,sending buffer]
+                conn.setblocking(False)             # set nonblocking
+                self.sdict[self.sid] = [conn, b'']  # sid -> [socket,buffer]
                 self.kdict[conn] = self.sid
                 self.sid = self.sid+1 if self.sid!=MAX_STREAM_ID else 1
                 self.sread.remove(self.pserv)
@@ -160,7 +170,7 @@ class trafix():
                         if (bmsg == mngt_prefix+b'sodie' and 
                                 k in self.sdict.keys()):
                             log.info('[%d] close sid %d by client', port, k)
-                            self.close_remove(k)
+                            self.clean(k)
                         # heartbeat
                         elif bmsg == hb_bmsg:
                             log.info('[%d] recv & send heartbeat (sid=%d)', port, k)
@@ -172,15 +182,16 @@ class trafix():
                                     self.sdict[k][1] += bmsg
                                     self.send_sk_nonblock(k)
                             except OSError:
-                                log.info('[%d] sid %d is closed by exception',
-                                                                        port, k)
+                                log.info('[%d] sid %d is closed while send',
+                                                                     port, k)
                                 self.gen_send.send((mngt_prefix+b'sodie',k))
-                                self.close_remove(k)
+                                self.clean(k)
                     else:
                         break
                 self.sread.remove(self.sk)
+            self.flush()
             # recv from connections,
-            # self.close_remove would remove s in self.sread list,
+            # self.clean would remove s in self.sread list,
             # so here should make a copy.
             for s in self.sread[:]:
                 k = self.kdict[s]
@@ -192,7 +203,7 @@ class trafix():
                     except OSError:
                         log.info('[%d] sid %d is donw while recv', port, k)
                         self.gen_send.send((mngt_prefix+b'sodie',k))
-                        self.close_remove(k, s)
+                        self.clean(k, s)
                         break
                     except StopIteration:
                         break
