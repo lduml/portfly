@@ -118,84 +118,85 @@ class trafix():
         self.sdict = {}    # sid --> socket
         self.kdict = {}    # socket --> sid
         self.sread = []    # sockets ready to be read
-        self.go(port)
+        # go
+        try:
+            self.go(port)
+        except Exception as e:
+            log.error('exception [%d]: %s', port, str(e))
+            log.exception(e)
+            for s,_ in self.sdict.values():
+                trafix.close_socket(s)
+        # end
+        trafix.close_socket(self.pserv)
+        trafix.close_socket(self.sk)
+        log.warning('[%d] closed', port)
+            
 
     def go(self, port):
         while True:
             assert len(self.sdict) == len(self.kdict)
             selist = [self.pserv, self.sk] + list(self.kdict.keys())
             self.sread, _, _ = select.select(selist,[],[],1)
-            try:
-                self.gen_send.send((None,0))
-                if len(self.sread) == 0:
-                    continue
-                # new connections
-                if self.pserv in self.sread:
-                    conn, addr = self.pserv.accept()
-                    self.gen_send.send((mngt_prefix+b'gogogo',self.sid))
-                    log.info('[%d] accept %s, sid %d', port, str(addr), self.sid)
-                    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-                    conn.setblocking(False)        # set nonblocking
-                    self.sdict[self.sid] = [conn, b'']  # sid -> [socket,sending buffer]
-                    self.kdict[conn] = self.sid
-                    self.sid = self.sid+1 if self.sid!=MAX_STREAM_ID else 1
-                    self.sread.remove(self.pserv)
-                # recv from tunnel
-                if self.sk in self.sread:
-                    while True:
-                        k, bmsg = next(self.gen_recv)
-                        if k:
-                            # connection die
-                            if (bmsg == mngt_prefix+b'sodie' and 
-                                    k in self.sdict.keys()):
-                                log.info('[%d] close sid %d by client', port, k)
-                                self.close_remove(k)
-                            # heartbeat
-                            elif bmsg == hb_bmsg:
-                                log.info('[%d] recv & send heartbeat (sid=%d)', port, k)
-                                self.gen_send.send((hb_bmsg,k))
-                            # data
-                            else:
-                                try:
-                                    if k in self.sdict.keys():
-                                        self.sdict[k][1] += bmsg
-                                        self.send_sk_nonblock(k)
-                                except OSError:
-                                    log.info('[%d] sid %d is closed by exception',
-                                                                            port, k)
-                                    self.gen_send.send((mngt_prefix+b'sodie',k))
-                                    self.close_remove(k)
+            self.gen_send.send((None,0))
+            if len(self.sread) == 0:
+                continue
+            # new connections
+            if self.pserv in self.sread:
+                conn, addr = self.pserv.accept()
+                self.gen_send.send((mngt_prefix+b'gogogo',self.sid))
+                log.info('[%d] accept %s, sid %d', port, str(addr), self.sid)
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+                conn.setblocking(False)        # set nonblocking
+                self.sdict[self.sid] = [conn, b'']  # sid -> [socket,sending buffer]
+                self.kdict[conn] = self.sid
+                self.sid = self.sid+1 if self.sid!=MAX_STREAM_ID else 1
+                self.sread.remove(self.pserv)
+            # recv from tunnel
+            if self.sk in self.sread:
+                while True:
+                    k, bmsg = next(self.gen_recv)
+                    if k:
+                        # connection die
+                        if (bmsg == mngt_prefix+b'sodie' and 
+                                k in self.sdict.keys()):
+                            log.info('[%d] close sid %d by client', port, k)
+                            self.close_remove(k)
+                        # heartbeat
+                        elif bmsg == hb_bmsg:
+                            log.info('[%d] recv & send heartbeat (sid=%d)', port, k)
+                            self.gen_send.send((hb_bmsg,k))
+                        # data
                         else:
-                            break
-                    self.sread.remove(self.sk)
-                # recv from connections,
-                # self.close_remove would remove s in self.sread list,
-                # so here should make a copy.
-                for s in self.sread[:]:
-                    k = self.kdict[s]
-                    gen_data = trafix.recv_sk_nonblock(s)
-                    while True:
-                        try:
-                            if (data:=next(gen_data)) == b'':
-                                raise OSError
-                        except OSError:
-                            log.info('[%d] sid %d is donw while recv', port, k)
-                            self.gen_send.send((mngt_prefix+b'sodie',k))
-                            self.close_remove(k, s)
-                            break
-                        except StopIteration:
-                            break
-                        self.gen_send.send((data,k))  # send data
-            except Exception as e:
-                log.error('exception [%d]: %s', port, str(e))
-                log.exception(e)
-                for s,_ in self.sdict.values():
-                    trafix.close_socket(s)
-                break
-        # while end
-        trafix.close_socket(self.pserv)
-        trafix.close_socket(self.sk)
-        log.warning('[%d] closed', port)
+                            try:
+                                if k in self.sdict.keys():
+                                    self.sdict[k][1] += bmsg
+                                    self.send_sk_nonblock(k)
+                            except OSError:
+                                log.info('[%d] sid %d is closed by exception',
+                                                                        port, k)
+                                self.gen_send.send((mngt_prefix+b'sodie',k))
+                                self.close_remove(k)
+                    else:
+                        break
+                self.sread.remove(self.sk)
+            # recv from connections,
+            # self.close_remove would remove s in self.sread list,
+            # so here should make a copy.
+            for s in self.sread[:]:
+                k = self.kdict[s]
+                gen_data = trafix.recv_sk_nonblock(s)
+                while True:
+                    try:
+                        if (data:=next(gen_data)) == b'':
+                            raise OSError
+                    except OSError:
+                        log.info('[%d] sid %d is donw while recv', port, k)
+                        self.gen_send.send((mngt_prefix+b'sodie',k))
+                        self.close_remove(k, s)
+                        break
+                    except StopIteration:
+                        break
+                    self.gen_send.send((data,k))  # send data
 
 
 if __name__ == '__main__':
