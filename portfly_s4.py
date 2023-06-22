@@ -77,15 +77,25 @@ def send_sk_nonblock_forever(sk):
             while True:
                 if len(data) == 0:
                     break
-                i = sk.send(data[:SK_IO_CHUNK_LEN])
+                if (i:=sk.send(data[:SK_IO_CHUNK_LEN])) == -1:
+                    raise ConnectionError('send_sk_nonblock_forever send -1')
                 data = data[i:]
         except BlockingIOError:
             continue
 
 
-def send_sk_nonblock(sk):
-    while True:
-        ...
+def send_sk_nonblock(sk_data):
+    sk, data = sk_data
+    try:
+        while True:
+            if (i:=sk.send(data[:SK_IO_CHUNK_LEN])) == -1:
+                raise ConnectionError('send_sk_nonblock send -1')
+            data = data[i:]
+            sk_data[1] = data
+            if len(data) == 0:
+                break
+    except BlockingIOError:
+        pass
 
 
 def portfly_pserv(sk, pserv, port):
@@ -96,24 +106,23 @@ def portfly_pserv(sk, pserv, port):
     next(gen_send)
 
     sid = 1       # sid, stream id, also called k
-    sodict = {}   # sid --> socket
+    sdict = {}   # sid --> socket
     kdict = {}    # socket --> sid
     while True:
-        log.debug('[%d] sizeof sodict %d', port, len(sodict))
-        rs, _, _ = select.select([pserv,sk]+list(sodict.values()),[],[],1)
-        if len(rs) == 0:
-            continue
+        assert len(sdict) == len(kdict)
+        rs, _, _ = select.select([pserv,sk]+list(kdict.keys()),[],[],1)
         try:
-            # flush
             gen_send.send((None,0))
+            if len(rs) == 0:
+                continue
             # new connections
             if pserv in rs:
                 conn, addr = pserv.accept()
                 gen_send.send((mngt_prefix+b'gogogo',sid))
                 log.info('[%d] accept %s, sid %d', port, str(addr), sid)
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-                conn.setblocking(False)  # set nonblocking
-                sodict[sid] = conn 
+                conn.setblocking(False)   # set nonblocking
+                sdict[sid] = [conn, b'']  # [socket, sending buffer]
                 kdict[conn] = sid
                 sid = sid+1 if sid!=MAX_STREAM_ID else 1
                 rs.remove(pserv)
@@ -124,9 +133,11 @@ def portfly_pserv(sk, pserv, port):
                     if k:
                         # connection die
                         if (bmsg == mngt_prefix+b'sodie' and 
-                                k in sodict.keys()):
+                                k in sdict.keys()):
                             log.info('[%d] close sid %d by client', port, k)
-                            close_socket(s:=sodict.pop(k,None))
+                            #close_socket(s:=sdict.pop(k,None))
+                            s, _ = sdict.pop(k, (None,None))
+                            close_socket(s)
                             remove_list_ele(rs, s)
                             if s: kdict.pop(s, None)
                         # heartbeat
@@ -136,15 +147,19 @@ def portfly_pserv(sk, pserv, port):
                         # data
                         else:
                             try:
-                                if k in sodict.keys():
-                                    sodict[k].setblocking(True)
-                                    sodict[k].sendall(bmsg)
-                                    sodict[k].setblocking(False)
+                                if k in sdict.keys():
+                                    #sdict[k][0].setblocking(True)
+                                    #sdict[k][0].sendall(bmsg)
+                                    #sdict[k][0].setblocking(False)
+                                    sdict[k][1] += bmsg
+                                    send_sk_nonblock(sdict[k])
                             except OSError:
                                 log.info('[%d] sid %d is closed by exception',
                                                                         port, k)
                                 gen_send.send((mngt_prefix+b'sodie',k))
-                                close_socket(s:=sodict.pop(k,None))
+                                #close_socket(s:=sdict.pop(k,None))
+                                s, _ = sdict.pop(k, (None,None))
+                                close_socket(s)
                                 remove_list_ele(rs, s)
                                 if s: kdict.pop(s, None)
                     else:
@@ -161,31 +176,18 @@ def portfly_pserv(sk, pserv, port):
                     except OSError:
                         log.info('[%d] sid %d is donw while recv', port, k)
                         gen_send.send((mngt_prefix+b'sodie',k))
-                        close_socket(sodict.pop(k,None))
+                        #close_socket(sdict.pop(k,None))
+                        sdict.pop(k, (None,None))
+                        close_socket(s)
                         kdict.pop(s, None)
                         break
                     except StopIteration:
                         break
                     gen_send.send((data,k))  # send data
-                #try:
-                #    data = s.recv(SK_IO_CHUNK_LEN)
-                #    if data == b'':
-                #        log.info('[%d] sid %d is down (recv 0)', port, k)
-                #        gen_send.send((mngt_prefix+b'sodie',k))
-                #        close_socket(sodict.pop(k,None))
-                #        kdict.pop(s, None)
-                #        continue
-                #except OSError:
-                #    log.info('[%d] sid %d has been reset', port, k)
-                #    gen_send.send((mngt_prefix+b'sodie',k))
-                #    close_socket(sodict.pop(k,None))
-                #    kdict.pop(s, None)
-                ## send data
-                #gen_send.send((data,k))
         except Exception as e:
             log.error('exception [%d]: %s', port, str(e))
             log.exception(e)
-            for s in sodict.values():
+            for s,_ in sdict.values():
                 close_socket(s)
             break
     # while end
