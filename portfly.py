@@ -1,16 +1,35 @@
+#!/usr/bin/env python3
 import sys
 import os
 import socket
 import threading
 import select
-from time import sleep
-from time import monotonic as time
 import logging as log
-from common import *
+import argparse
+import random
+import base64
 
 
 log.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s',
                 level=log.INFO)
+
+
+magic_bmsg = b'ask for REopening a PORT'
+magic_breply = b'Done'
+mngt_prefix = b'%-[(=!^$#@~+|0|+~@#$^!=)]-%'
+hb_bmsg = mngt_prefix + b'hello'
+
+
+def cx(bmsg: bytes) -> bytes:
+    r = random.randint
+    m = r(0,255)
+    return base64.b64encode(bytes([m]+[i^m for i in bmsg])
+                          + bytes([i^r(0,255) for i in range(m)]))
+
+
+def dx(bmsg: bytes) -> bytes:
+    bmsg = base64.b64decode(bmsg)
+    return bytes([i^bmsg[0] for i in bmsg[1:len(bmsg)-bmsg[0]]])
 
 
 SK_IO_CHUNK_LEN = 4096
@@ -28,7 +47,7 @@ class trafix():
                 sk.shutdown(socket.SHUT_RDWR)
                 sk.close()
             except OSError:
-                pass
+                return
 
     def clean(self, k, s=None):
         assert len(self.sdict) == len(self.kdict)
@@ -43,7 +62,7 @@ class trafix():
             try:
                 self.sread.remove(s)
             except ValueError:
-                pass
+                return
 
     @staticmethod
     def send_sk_nonblock_forever(sk):
@@ -90,7 +109,10 @@ class trafix():
         """ socket nonblocking recv generator, one shot """
         while True:
             try:
-                yield sk.recv(SK_IO_CHUNK_LEN)
+                data = sk.recv(SK_IO_CHUNK_LEN)
+                if len(data) == 0:
+                    raise ConnectionError('recv_sk_nonblock recv 0')
+                yield data
             except BlockingIOError:
                 return
         
@@ -104,7 +126,7 @@ class trafix():
                     raise ConnectionError('send_sk_nonblock send -1')
                 data = self.sdict[k][1] = data[i:]
         except BlockingIOError:
-            pass
+            return
 
     def __init__(self, sk, pserv, port):
         # no need to set pserv to nonblocking
@@ -182,8 +204,7 @@ class trafix():
                                     self.sdict[k][1] += bmsg
                                     self.send_sk_nonblock(k)
                             except OSError:
-                                log.info('[%d] sid %d is closed while send',
-                                                                     port, k)
+                                log.info('[%d] sid %d is closed while send', port, k)
                                 self.gen_send.send((mngt_prefix+b'sodie',k))
                                 self.clean(k)
                     else:
@@ -198,8 +219,7 @@ class trafix():
                 gen_data = trafix.recv_sk_nonblock(s)
                 while True:
                     try:
-                        if (data:=next(gen_data)) == b'':
-                            raise OSError
+                        data = next(gen_data)
                     except OSError:
                         log.info('[%d] sid %d is donw while recv', port, k)
                         self.gen_send.send((mngt_prefix+b'sodie',k))
@@ -229,8 +249,8 @@ if __name__ == '__main__':
                 # recv x
                 x = eval((dx(rf.readline().strip())).decode())
                 log.warning('Encryption %d.', x)
-                tbsend = sosr.get_send(x)
-                tbrecv = sosr.get_recv(x)
+                #tbsend = sosr.get_send(x)
+                #tbrecv = sosr.get_recv(x)
                 # good to go
                 so.sendall(cx(magic_breply) + b'\n')
                 threading.Thread(target=trafix,
