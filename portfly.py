@@ -8,6 +8,7 @@ import argparse
 import random
 import base64
 import multiprocessing as mp
+import threading
 
 
 log.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s',
@@ -128,32 +129,39 @@ class trafix():
         except BlockingIOError:
             return
 
-    def __init__(self, sk, pserv, port, role):
-        # no need to set pserv to nonblocking
-        self.pserv = pserv
+    def __init__(self, sk, role, *argv):
         # set tunnel socket to nonblocking
         self.sk = sk
         self.sk.setblocking(False)
         self.gen_recv = trafix.recv_sk_nonblock_forever(sk)
         self.gen_send = trafix.send_sk_nonblock_forever(sk)
         next(self.gen_send)
-        self.sid = 1       # sid, stream id, also called k
+        self.role = role
+        if self.role == 's':
+            # no need to set pserv to nonblocking
+            self.pserv = argv[0]
+            self.port = argv[1]
+            self.sid = 1   # sid, stream id, also called k
+        else:
+            self.target = argv[0]
+            self.port = argv[1]
         self.sdict = {}    # sid --> socket
         self.kdict = {}    # socket --> sid
         self.sread = []    # sockets ready to be read
-        self.port = port
         # go
         try:
-            self.go(port)
+            self.go(self.port)
         except Exception as e:
-            log.error('exception [%d]: %s', port, str(e))
+            if self.role == 's':
+                log.error('exception [%d]: %s', self.port, str(e))
             log.exception(e)
             for s,_ in self.sdict.values():
                 trafix.close_socket(s)
         # end
-        trafix.close_socket(self.pserv)
         trafix.close_socket(self.sk)
-        log.warning('[%d] closed', port)
+        if self.role == 's':
+            trafix.close_socket(self.pserv)
+            log.warning('[%d] closed', self.port)
 
     def flush(self):
         self.gen_send.send((None,0))
@@ -168,12 +176,13 @@ class trafix():
     def go(self, port):
         while True:
             self.flush()
-            selist = [self.pserv, self.sk] + list(self.kdict.keys())
+            selist = list(self.kdict.keys()) + \
+                     ([self.sk] if self.role=='c' else [self.pserv,self.sk])
             self.sread, _, _ = select.select(selist,[],[],1)
             if len(self.sread) == 0:
                 continue
-            # new connections
-            if self.pserv in self.sread:
+            # new connections in server role
+            if self.role=='s' and self.pserv in self.sread:
                 conn, addr = self.pserv.accept()
                 self.gen_send.send((mngt_prefix+b'gogogo',self.sid))
                 log.info('[%d] accept %s, sid %d', port, str(addr), self.sid)
@@ -188,15 +197,30 @@ class trafix():
                 while True:
                     k, bmsg = next(self.gen_recv)
                     if k:
+                        # new connection in client role
+                        if bmsg == mngt_prefix+b'gogogo':
+                            try:
+                                conn = socket.create_connection(self.target, timeout=2)
+                                log.info('[%d] connect target %s ok, sid %d', port, str(self.target), k)
+                                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+                                conn.setblocking(False)
+                                self.sdict[k] = [conn, b'']
+                                self.kdict[conn] = k
+                            except OSError as e:
+                                log.error('connect %s failed: %s',str(taddr), str(e))
+                                self.gen_send.send((mngt_prefix+b'sodie',k))
                         # connection die
-                        if (bmsg == mngt_prefix+b'sodie' and 
+                        elif (bmsg == mngt_prefix+b'sodie' and 
                                 k in self.sdict.keys()):
-                            log.info('[%d] close sid %d by client', port, k)
+                            log.info('[%d] close sid %d by peer', port, k)
                             self.clean(k)
                         # heartbeat
                         elif bmsg == hb_bmsg:
-                            log.info('[%d] recv & send heartbeat (sid=%d)', port, k)
-                            self.gen_send.send((hb_bmsg,k))
+                            if self.role == 's':
+                                log.info('[%d] recv & send heartbeat (sid=%d)', port, k)
+                                self.gen_send.send((hb_bmsg,k))
+                            else:
+                                log.info('recv heartbeat')
                         # data
                         else:
                             try:
@@ -250,13 +274,49 @@ def server_main(saddr):
                 log.warning('encryption %d', x)
                 sk.sendall(cx(magic_breply) + b'\n')
                 log.warning('good to go...')
-                mp.Process(target=trafix, args=(sk,pserv,port,'s')).start()
+                mp.Process(target=trafix, args=(sk,'s',pserv,port)).start()
             else:
                 raise ValueError('magic bmsg error')
         except Exception as e:
             log.error('exception %s', str(faddr))
             log.exception(e)
-            trafix.close(socket(sk))
+            trafix.close_socket(socket(sk))
+
+
+def client_main(setting, saddr):
+    pub_port, host, port = setting.strip().split(':')
+    serv_ip, serv_port = saddr.strip().split(':')
+    serv_addr = (serv_ip, int(serv_port))
+
+    try:
+        so = socket.create_connection(serv_addr)
+        so.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+        so.sendall(cx(magic_bmsg) + b'\n')
+        so.sendall(cx(pub_port.encode()) + b'\n')
+        #so.sendall(cx(str(args.x).encode()) + b'\n')
+        so.sendall(cx(str(0).encode()) + b'\n')
+        rf = so.makefile('rb')
+        if dx(rf.readline().strip()) == magic_breply:
+            log.warning('Connect server %s ok, port %s is ready.',
+                                                    serv_ip, pub_port)
+        else:
+            raise ValueError('magic_breply is not match')
+    except Exception as e:
+        log.exception(e)
+        try:
+            so.shutdown(socket.SHUT_RDWR)
+            so.close()
+        except (NameError,OSError):
+            pass
+        sys.exit(1)
+
+    target_addr = (host, int(port))
+    #tbsend = sosr.get_send(args.x)
+    #tbrecv = sosr.get_recv(args.x)
+    th = threading.Thread(target=trafix,
+                          args=(so,'c',target_addr,int(pub_port)), daemon=True)
+    th.start()
+    th.join()
 
 
 if __name__ == '__main__':
@@ -268,11 +328,26 @@ if __name__ == '__main__':
                           help='client end of tcp tunnel')
     parser.add_argument('--ip',
                         help='server listen ip, default is all')
-    parser.add_argument('-p', '--port', type=int, required=True,
+    parser.add_argument('-p', '--port', type=int,
                         help='server listen port')
+    parser.add_argument('--setting',
+                        help='server_port:target_host:target_port')
+    parser.add_argument('--serveraddr',
+                        help='server_host:server_port')
     args = parser.parse_args()
 
     if args.server:
+        if args.ip is None:
+            print('--ip is not provide, 0.0.0.0 is used by default')
+        if args.port is None:
+            print('--port must be provied in server role')
+            sys.exit(1)
+        if args.setting:
+            print('--setting is ignored in server role')
+        if args.serveraddr:
+            print('--serveraddr is ignored in server role')
         server_main(('' if args.ip is None else args.ip, int(args.port)))
+    else:
+        client_main(args.setting, args.serveraddr)
 
 
