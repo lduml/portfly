@@ -2,12 +2,12 @@
 import sys
 import os
 import socket
-import threading
 import select
 import logging as log
 import argparse
 import random
 import base64
+import multiprocessing as mp
 
 
 log.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s',
@@ -128,7 +128,7 @@ class trafix():
         except BlockingIOError:
             return
 
-    def __init__(self, sk, pserv, port):
+    def __init__(self, sk, pserv, port, role):
         # no need to set pserv to nonblocking
         self.pserv = pserv
         # set tunnel socket to nonblocking
@@ -230,38 +230,49 @@ class trafix():
                     self.gen_send.send((data,k))  # send data
 
 
-if __name__ == '__main__':
-    addr = ('', int(sys.argv[1].strip()))
-    serv = socket.create_server(('', int(sys.argv[1].strip())))
-    log.warning('Start report server at address %s.', str(addr))
+def server_main(saddr):
+    serv = socket.create_server(saddr)
+    log.warning('start portfly server at %s', str(saddr))
     while True:
-        so, addr = serv.accept()
-        log.warning('Accept from %s.', str(addr))
-        so.settimeout(2)
-        rf = so.makefile('rb')
+        sk, faddr = serv.accept()
+        log.warning('accept from %s', str(faddr))
+        sk.settimeout(2)
+        rf = sk.makefile('rb')
         try:
             if dx(rf.readline().strip()) == magic_bmsg:
                 # recv port
                 port = int(dx(rf.readline().strip()))
-                log.warning('Get the pub_port %d.', port)
-                tserv = socket.create_server(('', port))
-                so.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+                pserv = socket.create_server(('', port))
+                log.warning('create server at public port %d', port)
+                sk.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
                 # recv x
                 x = eval((dx(rf.readline().strip())).decode())
-                log.warning('Encryption %d.', x)
-                #tbsend = sosr.get_send(x)
-                #tbrecv = sosr.get_recv(x)
-                # good to go
-                so.sendall(cx(magic_breply) + b'\n')
-                threading.Thread(target=trafix,
-                                 args=(so,tserv,port),
-                                 daemon=True).start()
+                log.warning('encryption %d', x)
+                sk.sendall(cx(magic_breply) + b'\n')
+                log.warning('good to go...')
+                mp.Process(target=trafix, args=(sk,pserv,port,'s')).start()
             else:
                 raise ValueError('magic bmsg error')
         except Exception as e:
-            log.error('Exception %s', str(addr))
+            log.error('exception %s', str(faddr))
             log.exception(e)
-            so.shutdown(socket.SHUT_RDWR)
-            so.close()
+            trafix.close(socket(sk))
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    end_type = parser.add_mutually_exclusive_group(required=True)
+    end_type.add_argument('-s', '--server', action='store_true',
+                          help='server end of tcp tunnel')
+    end_type.add_argument('-c', '--client', action='store_true',
+                          help='client end of tcp tunnel')
+    parser.add_argument('--ip',
+                        help='server listen ip, default is all')
+    parser.add_argument('-p', '--port', type=int, required=True,
+                        help='server listen port')
+    args = parser.parse_args()
+
+    if args.server:
+        server_main(('' if args.ip is None else args.ip, int(args.port)))
 
 
