@@ -9,6 +9,7 @@ import random
 import base64
 import multiprocessing as mp
 import threading
+import time
 
 
 log.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s',
@@ -70,7 +71,7 @@ class trafix():
         """ socket nonblocking send generator, last forever """
         data = b''
         while True:
-            bmsg, sid = yield
+            bmsg, sid = yield len(data)
             if bmsg is not None:
                 data += (len(bmsg)+8).to_bytes(4,'little') \
                                 + sid.to_bytes(4,'big') \
@@ -127,7 +128,8 @@ class trafix():
                     raise ConnectionError('send_sk_nonblock send -1')
                 data = self.sdict[k][1] = data[i:]
         except BlockingIOError:
-            return
+            pass
+        return len(data)
 
     def __init__(self, sk, role, *argv):
         # set tunnel socket to nonblocking
@@ -145,6 +147,7 @@ class trafix():
         else:
             self.target = argv[0]
             self.port = argv[1]
+            self.heartbeat_time = time.time()
         self.sdict = {}    # sid --> socket
         self.kdict = {}    # socket --> sid
         self.sread = []    # sockets ready to be read
@@ -164,23 +167,65 @@ class trafix():
             log.warning('[%d] closed', self.port)
 
     def flush(self):
-        self.gen_send.send((None,0))
+        tunnel_byte_left = self.gen_send.send((None,0))
         try:
+            sk_byte_left = 0
             for k in self.sdict.keys():
-                self.send_sk_nonblock(k)
+                sk_byte_left += self.send_sk_nonblock(k)
         except OSError:
             log.info('[%d] sid %d is closed while flush', self.port, k)
-            self.gen_send.send((mngt_prefix+b'sodie',k))
+            tunnel_byte_left = self.gen_send.send((mngt_prefix+b'sodie',k))
             self.clean(k)
+        return tunnel_byte_left + sk_byte_left
+
+
+    def send_heartbeat(self):
+        now = time.time()
+        if now - self.heartbeat_time > 30:
+            self.gen_send.send((hb_bmsg,0))
+            log.info('[%d] send heartbeat', self.port)
+            self.heartbeat_time = now
+
+
+    def next_sid(self):
+        # sid 0 is used for heartbeat,
+        # sid should be incremented sequentially to avoid conflict.
+        while True:
+            self.sid = self.sid+1 if self.sid!=MAX_STREAM_ID else 1
+            if self.sid not in self.sdict.keys():
+                break
+
 
     def go(self, port):
         while True:
-            self.flush()
+            # select list
             selist = list(self.kdict.keys()) + \
                      ([self.sk] if self.role=='c' else [self.pserv,self.sk])
-            self.sread, _, _ = select.select(selist,[],[],1)
+
+            # server is always passive,
+            # so it can be blocked forever...
+            # but client can not, which needs to send heartbeat.
+            bytes_left = self.flush()
+            if bytes_left != 0:
+                log.info('[%d] after flush, bytes left %d', port, bytes_left)
+                # just do a polling
+                self.sread, _, _ = select.select(selist, [], [], 0)
+            else:
+                if self.role == 's':
+                    self.sread, _, _ = select.select(selist, [], [])
+                else:
+                    self.sread, _, _ = select.select(selist, [], [], 9)
+
+            # when no socket can be read,
             if len(self.sread) == 0:
+                # it might be a chance to send heartbeat.
+                if self.role == 'c':
+                    self.send_heartbeat()
+                # it's better to wait a while before next flush.
+                if bytes_left != 0:
+                    time.sleep(0.2)
                 continue
+
             # new connections in server role
             if self.role=='s' and self.pserv in self.sread:
                 conn, addr = self.pserv.accept()
@@ -190,13 +235,14 @@ class trafix():
                 conn.setblocking(False)             # set nonblocking
                 self.sdict[self.sid] = [conn, b'']  # sid -> [socket,buffer]
                 self.kdict[conn] = self.sid
-                self.sid = self.sid+1 if self.sid!=MAX_STREAM_ID else 1
+                self.next_sid()
                 self.sread.remove(self.pserv)
+
             # recv from tunnel
             if self.sk in self.sread:
                 while True:
                     k, bmsg = next(self.gen_recv)
-                    if k:
+                    if k is not None:
                         # new connection in client role
                         if bmsg == mngt_prefix+b'gogogo':
                             try:
@@ -217,10 +263,10 @@ class trafix():
                         # heartbeat
                         elif bmsg == hb_bmsg:
                             if self.role == 's':
-                                log.info('[%d] recv & send heartbeat (sid=%d)', port, k)
+                                log.info('[%d] recv and send heartbeat, sid %d', port, k)
                                 self.gen_send.send((hb_bmsg,k))
                             else:
-                                log.info('recv heartbeat')
+                                log.info('[%d] recv heartbeat', port)
                         # data
                         else:
                             try:
@@ -234,7 +280,7 @@ class trafix():
                     else:
                         break
                 self.sread.remove(self.sk)
-            self.flush()
+
             # recv from connections,
             # self.clean would remove s in self.sread list,
             # so here should make a copy.
