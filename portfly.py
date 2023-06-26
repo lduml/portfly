@@ -23,6 +23,7 @@ hb_bmsg = mngt_prefix + b'hello'
 
 
 def cx(bmsg: bytes) -> bytes:
+    """ simple cipher """
     r = random.randint
     m = r(0,255)
     return base64.b64encode(bytes([m]+[i^m for i in bmsg])
@@ -30,6 +31,7 @@ def cx(bmsg: bytes) -> bytes:
 
 
 def dx(bmsg: bytes) -> bytes:
+    """ simple decipher """
     bmsg = base64.b64decode(bmsg)
     return bytes([i^bmsg[0] for i in bmsg[1:len(bmsg)-bmsg[0]]])
 
@@ -328,10 +330,10 @@ def server_main(saddr):
                 log.warning('create server at public port %d', port)
                 sk.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
                 # recv x
-                x = eval((dx(rf.readline().strip())).decode())
-                log.warning('encryption %d', x)
+                #x = eval((dx(rf.readline().strip())).decode())
+                #log.warning('encryption %d', x)
                 sk.sendall(cx(magic_breply) + b'\n')
-                log.warning('good to go...')
+                log.warning('launch process...')
                 mp.Process(target=trafix, args=(sk,'s',pserv,port)).start()
             else:
                 raise ValueError('magic bmsg error')
@@ -351,8 +353,7 @@ def client_main(setting, saddr):
         so.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
         so.sendall(cx(magic_bmsg) + b'\n')
         so.sendall(cx(pub_port.encode()) + b'\n')
-        #so.sendall(cx(str(args.x).encode()) + b'\n')
-        so.sendall(cx(str(0).encode()) + b'\n')
+        #so.sendall(cx(str(0).encode()) + b'\n')
         rf = so.makefile('rb')
         if dx(rf.readline().strip()) == magic_breply:
             log.warning('Connect server %s ok, port %s is ready.',
