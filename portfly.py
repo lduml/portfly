@@ -2,7 +2,7 @@
 import sys
 import os
 import socket
-import select
+import selectors
 import logging as log
 import argparse
 import random
@@ -61,10 +61,11 @@ class trafix():
         if s:
             self.kdict.pop(s, None)
             trafix.close_socket(s)
-            try:
-                self.sread.remove(s)
-            except ValueError:
-                return
+            self.sel.unregister(s)
+            #try:
+            #    self.sread.remove(s)
+            #except ValueError:
+            #    return
 
     @staticmethod
     def send_sk_nonblock_forever(sk):
@@ -131,26 +132,35 @@ class trafix():
             pass
         return len(data)
 
+
     def __init__(self, sk, role, *argv):
-        # set tunnel socket to nonblocking
+        self.role = role  # 's':server or 'c':client
+        
+        # set tunnel socket to nonblocking, init generators
         self.sk = sk
         self.sk.setblocking(False)
         self.gen_recv = trafix.recv_sk_nonblock_forever(sk)
         self.gen_send = trafix.send_sk_nonblock_forever(sk)
         next(self.gen_send)
-        self.role = role
+
+        # epoll in Linux, select in Windows
+        self.sel = selectors.DefaultSelector()
+        self.sel.register(self.sk, selectors.EVENT_READ)
+
+        # retrive argv
         if self.role == 's':
-            # no need to set pserv to nonblocking
-            self.pserv = argv[0]
+            self.pserv = argv[0]  # no need to set pserv to nonblocking
             self.port = argv[1]
-            self.sid = 1   # sid, stream id, also called k
+            self.sid = 1          # sid, stream id, also called k
+            self.sel.register(self.pserv, selectors.EVENT_READ)
         else:
             self.target = argv[0]
             self.port = argv[1]
             self.heartbeat_time = time.time()
+
         self.sdict = {}    # sid --> socket
         self.kdict = {}    # socket --> sid
-        self.sread = []    # sockets ready to be read
+        #self.sread = []    # sockets ready to be read
         # go
         try:
             self.go(self.port)
@@ -166,17 +176,18 @@ class trafix():
             trafix.close_socket(self.pserv)
             log.warning('[%d] closed', self.port)
 
+
     def flush(self):
-        tunnel_byte_left = self.gen_send.send((None,0))
+        tunnel_left = self.gen_send.send((None,0))
         try:
-            sk_byte_left = 0
+            sk_left = 0
             for k in self.sdict.keys():
-                sk_byte_left += self.send_sk_nonblock(k)
+                sk_left += self.send_sk_nonblock(k)
         except OSError:
             log.info('[%d] sid %d is closed while flush', self.port, k)
-            tunnel_byte_left = self.gen_send.send((mngt_prefix+b'sodie',k))
+            tunnel_left = self.gen_send.send((mngt_prefix+b'sodie',k))
             self.clean(k)
-        return tunnel_byte_left + sk_byte_left
+        return tunnel_left + sk_left
 
 
     def send_heartbeat(self):
@@ -199,8 +210,8 @@ class trafix():
     def go(self, port):
         while True:
             # select list
-            selist = list(self.kdict.keys()) + \
-                     ([self.sk] if self.role=='c' else [self.pserv,self.sk])
+            #selist = list(self.kdict.keys()) + \
+            #         ([self.sk] if self.role=='c' else [self.pserv,self.sk])
 
             # server is always passive,
             # so it can be blocked forever...
@@ -209,15 +220,18 @@ class trafix():
             if bytes_left != 0:
                 log.info('[%d] after flush, bytes left %d', port, bytes_left)
                 # just do a polling
-                self.sread, _, _ = select.select(selist, [], [], 0)
+                #self.sread, _, _ = select.select(selist, [], [], 0)
+                events = self.sel.select(0)
             else:
                 if self.role == 's':
-                    self.sread, _, _ = select.select(selist, [], [])
+                    #self.sread, _, _ = select.select(selist, [], [])
+                    events = self.sel.select()
                 else:
-                    self.sread, _, _ = select.select(selist, [], [], 9)
+                    #self.sread, _, _ = select.select(selist, [], [], 9)
+                    events = self.sel.select(9)
 
-            # when no socket can be read,
-            if len(self.sread) == 0:
+            # when no socket ready to be read,
+            if len(events) == 0:
                 # it might be a chance to send heartbeat.
                 if self.role == 'c':
                     self.send_heartbeat()
@@ -226,78 +240,83 @@ class trafix():
                     time.sleep(0.2)
                 continue
 
-            # new connections in server role
-            if self.role=='s' and self.pserv in self.sread:
-                conn, addr = self.pserv.accept()
-                self.gen_send.send((mngt_prefix+b'gogogo',self.sid))
-                log.info('[%d] accept %s, sid %d', port, str(addr), self.sid)
-                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-                conn.setblocking(False)             # set nonblocking
-                self.sdict[self.sid] = [conn, b'']  # sid -> [socket,buffer]
-                self.kdict[conn] = self.sid
-                self.next_sid()
-                self.sread.remove(self.pserv)
+            # event loop
+            for fd,_ in events:
+                # new connections in server role
+                if self.role=='s' and fd.fileobj==self.pserv:
+                    conn, addr = self.pserv.accept()
+                    self.gen_send.send((mngt_prefix+b'gogogo',self.sid))
+                    log.info('[%d] accept %s, sid %d', port, str(addr), self.sid)
+                    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+                    conn.setblocking(False)             # set nonblocking
+                    self.sel.register(conn, selectors.EVENT_READ)
+                    self.sdict[self.sid] = [conn, b'']  # sid -> [socket,buffer]
+                    self.kdict[conn] = self.sid
+                    self.next_sid()
+                    #self.sread.remove(self.pserv)
 
-            # recv from tunnel
-            if self.sk in self.sread:
-                while True:
-                    k, bmsg = next(self.gen_recv)
-                    if k is not None:
-                        # new connection in client role
-                        if bmsg == mngt_prefix+b'gogogo':
-                            try:
-                                conn = socket.create_connection(self.target, timeout=2)
-                                log.info('[%d] connect target %s ok, sid %d', port, str(self.target), k)
-                                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-                                conn.setblocking(False)
-                                self.sdict[k] = [conn, b'']
-                                self.kdict[conn] = k
-                            except OSError as e:
-                                log.error('connect %s failed: %s',str(taddr), str(e))
-                                self.gen_send.send((mngt_prefix+b'sodie',k))
-                        # connection die
-                        elif (bmsg == mngt_prefix+b'sodie' and 
-                                k in self.sdict.keys()):
-                            log.info('[%d] close sid %d by peer', port, k)
-                            self.clean(k)
-                        # heartbeat
-                        elif bmsg == hb_bmsg:
-                            if self.role == 's':
-                                log.info('[%d] recv and send heartbeat, sid %d', port, k)
-                                self.gen_send.send((hb_bmsg,k))
-                            else:
-                                log.info('[%d] recv heartbeat', port)
-                        # data
-                        else:
-                            try:
-                                if k in self.sdict.keys():
-                                    self.sdict[k][1] += bmsg
-                                    self.send_sk_nonblock(k)
-                            except OSError:
-                                log.info('[%d] sid %d is closed while send', port, k)
-                                self.gen_send.send((mngt_prefix+b'sodie',k))
+                # recv from tunnel
+                elif fd.fileobj == self.sk:
+                    while True:
+                        k, bmsg = next(self.gen_recv)
+                        if k is not None:
+                            # new connection in client role
+                            if bmsg == mngt_prefix+b'gogogo':
+                                try:
+                                    conn = socket.create_connection(self.target, timeout=2)
+                                    log.info('[%d] connect target %s ok, sid %d', port, str(self.target), k)
+                                    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+                                    conn.setblocking(False)
+                                    self.sel.register(conn, selectors.EVENT_READ)
+                                    self.sdict[k] = [conn, b'']
+                                    self.kdict[conn] = k
+                                except OSError as e:
+                                    log.error('connect %s failed: %s',str(taddr), str(e))
+                                    self.gen_send.send((mngt_prefix+b'sodie',k))
+                            # connection die
+                            elif (bmsg == mngt_prefix+b'sodie' and 
+                                    k in self.sdict.keys()):
+                                log.info('[%d] close sid %d by peer', port, k)
                                 self.clean(k)
-                    else:
-                        break
-                self.sread.remove(self.sk)
+                            # heartbeat
+                            elif bmsg == hb_bmsg:
+                                if self.role == 's':
+                                    log.info('[%d] recv and send heartbeat, sid %d', port, k)
+                                    self.gen_send.send((hb_bmsg,k))
+                                else:
+                                    log.info('[%d] recv heartbeat', port)
+                            # data
+                            else:
+                                try:
+                                    if k in self.sdict.keys():
+                                        self.sdict[k][1] += bmsg
+                                        self.send_sk_nonblock(k)
+                                except OSError:
+                                    log.info('[%d] sid %d is closed while send', port, k)
+                                    self.gen_send.send((mngt_prefix+b'sodie',k))
+                                    self.clean(k)
+                        else:
+                            break
+                    #self.sread.remove(self.sk)
 
-            # recv from connections,
-            # self.clean would remove s in self.sread list,
-            # so here should make a copy.
-            for s in self.sread[:]:
-                k = self.kdict[s]
-                gen_data = trafix.recv_sk_nonblock(s)
-                while True:
-                    try:
-                        data = next(gen_data)
-                    except OSError:
-                        log.info('[%d] sid %d is donw while recv', port, k)
-                        self.gen_send.send((mngt_prefix+b'sodie',k))
-                        self.clean(k, s)
-                        break
-                    except StopIteration:
-                        break
-                    self.gen_send.send((data,k))  # send data
+                # recv from connections,
+                # self.clean would remove s in self.sread list,
+                # so here should make a copy.
+                #for s in self.sread[:]:
+                else:
+                    k = self.kdict[fd.fileobj]
+                    gen_data = trafix.recv_sk_nonblock(fd.fileobj)
+                    while True:
+                        try:
+                            data = next(gen_data)
+                        except OSError:
+                            log.info('[%d] sid %d is donw while recv', port, k)
+                            self.gen_send.send((mngt_prefix+b'sodie',k))
+                            self.clean(k, fd.fileobj)
+                            break
+                        except StopIteration:
+                            break
+                        self.gen_send.send((data,k))  # send data
 
 
 def server_main(saddr):
@@ -357,8 +376,6 @@ def client_main(setting, saddr):
         sys.exit(1)
 
     target_addr = (host, int(port))
-    #tbsend = sosr.get_send(args.x)
-    #tbrecv = sosr.get_recv(args.x)
     th = threading.Thread(target=trafix,
                           args=(so,'c',target_addr,int(pub_port)), daemon=True)
     th.start()
