@@ -51,25 +51,26 @@ class trafix():
             except OSError:
                 return
 
-    def clean(self, k, s=None):
+
+    def clean(self, sid, sk=None):
+        """ delete sid from sdict,
+            delete sk from kdict,
+            unregister sk from selector. """
         assert len(self.sdict) == len(self.kdict)
-        _s, _ = self.sdict.pop(k, (None,None))
-        if s:
-            assert s is _s
+        _sk, _ = self.sdict.pop(sid, (None,None))
+        if sk:
+            assert sk is _sk
         else:
-            s = _s
-        if s:
-            self.kdict.pop(s, None)
-            trafix.close_socket(s)
-            self.sel.unregister(s)
-            #try:
-            #    self.sread.remove(s)
-            #except ValueError:
-            #    return
+            sk = _sk
+        if sk:
+            self.kdict.pop(sk, None)
+            trafix.close_socket(sk)
+            self.sel.unregister(sk)
+
 
     @staticmethod
-    def send_sk_nonblock_forever(sk):
-        """ socket nonblocking send generator, last forever """
+    def send_sk_nonblock_gen(sk):
+        """ socket nonblocking send generator """
         data = b''
         while True:
             bmsg, sid = yield len(data)
@@ -82,20 +83,21 @@ class trafix():
                     if len(data) == 0:
                         break
                     if (i:=sk.send(data[:SK_IO_CHUNK_LEN])) == -1:
-                        raise ConnectionError('send_sk_nonblock_forever send -1')
+                        raise ConnectionError('send_sk_nonblock_gen send -1')
                     data = data[i:]
             except BlockingIOError:
                 continue
 
+
     @staticmethod
-    def recv_sk_nonblock_forever(sk):
-        """ socket nonblocking recv generator, last forever """
+    def recv_sk_nonblock_gen(sk):
+        """ socket nonblocking recv generator """
         data = b''
         while True:
             try:
                 _d = sk.recv(SK_IO_CHUNK_LEN)
                 if len(_d) == 0:
-                    raise ConnectionError('recv_sk_nonblock_forever recv 0')
+                    raise ConnectionError('recv_sk_nonblock_gen recv 0')
                 data += _d
                 while (dlen:=len(data)) > 4:
                     mlen = int.from_bytes(data[:4], 'little')
@@ -106,6 +108,7 @@ class trafix():
                         break
             except BlockingIOError:
                 yield None, b''
+
 
     @staticmethod
     def recv_sk_nonblock(sk):
@@ -119,8 +122,9 @@ class trafix():
             except BlockingIOError:
                 return
         
-    def send_sk_nonblock(self, k):
-        sk, data = self.sdict[k]
+
+    def send_sk_nonblock(self, sid):
+        sk, data = self.sdict[sid]
         try:
             while True:
                 if len(data) == 0:
@@ -139,19 +143,19 @@ class trafix():
         # set tunnel socket to nonblocking, init generators
         self.sk = sk
         self.sk.setblocking(False)
-        self.gen_recv = trafix.recv_sk_nonblock_forever(sk)
-        self.gen_send = trafix.send_sk_nonblock_forever(sk)
+        self.gen_recv = trafix.recv_sk_nonblock_gen(sk)
+        self.gen_send = trafix.send_sk_nonblock_gen(sk)
         next(self.gen_send)
 
         # epoll in Linux, select in Windows
         self.sel = selectors.DefaultSelector()
         self.sel.register(self.sk, selectors.EVENT_READ)
 
-        # retrive argv
+        # retrive argv and set accordingly
         if self.role == 's':
             self.pserv = argv[0]  # no need to set pserv to nonblocking
             self.port = argv[1]
-            self.sid = 1          # sid, stream id, also called k
+            self.sid = 1          # sid, stream id
             self.sel.register(self.pserv, selectors.EVENT_READ)
         else:
             self.target = argv[0]
@@ -160,21 +164,20 @@ class trafix():
 
         self.sdict = {}    # sid --> socket
         self.kdict = {}    # socket --> sid
-        #self.sread = []    # sockets ready to be read
+
         # go
         try:
             self.go(self.port)
         except Exception as e:
-            if self.role == 's':
-                log.error('exception [%d]: %s', self.port, str(e))
+            log.error('exception [%d]: %s', self.port, str(e))
             log.exception(e)
             for s,_ in self.sdict.values():
                 trafix.close_socket(s)
-        # end
+        # the end
         trafix.close_socket(self.sk)
         if self.role == 's':
             trafix.close_socket(self.pserv)
-            log.warning('[%d] closed', self.port)
+        log.warning('[%d] closed', self.port)
 
 
     def flush(self):
@@ -190,15 +193,15 @@ class trafix():
         return tunnel_left + sk_left
 
 
-    def send_heartbeat(self):
+    def try_send_heartbeat(self):
         now = time.time()
-        if now - self.heartbeat_time > 30:
+        if now - self.heartbeat_time > 30:  # minimal heartbeat interval
             self.gen_send.send((hb_bmsg,0))
             log.info('[%d] send heartbeat', self.port)
             self.heartbeat_time = now
 
 
-    def next_sid(self):
+    def update_sid(self):
         # sid 0 is used for heartbeat,
         # sid should be incremented sequentially to avoid conflict.
         while True:
@@ -209,32 +212,24 @@ class trafix():
 
     def go(self, port):
         while True:
-            # select list
-            #selist = list(self.kdict.keys()) + \
-            #         ([self.sk] if self.role=='c' else [self.pserv,self.sk])
-
             # server is always passive,
             # so it can be blocked forever...
             # but client can not, which needs to send heartbeat.
             bytes_left = self.flush()
             if bytes_left != 0:
-                log.info('[%d] after flush, bytes left %d', port, bytes_left)
-                # just do a polling
-                #self.sread, _, _ = select.select(selist, [], [], 0)
-                events = self.sel.select(0)
+                log.info('[%d] flushed, bytes left %d', port, bytes_left)
+                events = self.sel.select(0)  # just a polling
             else:
                 if self.role == 's':
-                    #self.sread, _, _ = select.select(selist, [], [])
                     events = self.sel.select()
                 else:
-                    #self.sread, _, _ = select.select(selist, [], [], 9)
                     events = self.sel.select(9)
 
             # when no socket ready to be read,
             if len(events) == 0:
                 # it might be a chance to send heartbeat.
                 if self.role == 'c':
-                    self.send_heartbeat()
+                    self.try_send_heartbeat()
                 # it's better to wait a while before next flush.
                 if bytes_left != 0:
                     time.sleep(0.2)
@@ -252,8 +247,7 @@ class trafix():
                     self.sel.register(conn, selectors.EVENT_READ)
                     self.sdict[self.sid] = [conn, b'']  # sid -> [socket,buffer]
                     self.kdict[conn] = self.sid
-                    self.next_sid()
-                    #self.sread.remove(self.pserv)
+                    self.update_sid()
 
                 # recv from tunnel
                 elif fd.fileobj == self.sk:
