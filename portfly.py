@@ -326,7 +326,7 @@ def server_main(saddr):
         except Exception as e:
             log.error('exception %s', str(faddr))
             log.exception(e)
-            trafix.close_socket(socket(sk))
+            trafix.close_socket(sk)
 
 
 def client_main(setting, saddr):
