@@ -1,31 +1,49 @@
-# report
+* [portfly](#portfly)
+* [Usage](#Usage)
+    * [Start Server](#Start-Server)
+    * [Start Client](#Start-Client)
+    * [Optional Parameters](#Optional-Parameters)
 
-A pure python `lite` version of SSH Remote Port Forwarding.
+# portfly
 
-Basicly, SSH remote port forwarding is the cheapest way to get `Intranet
-Penetration`, and the forwarding path is secured. But if you want to make the
-remote port listened at 0.0.0.0 other than 127.0.0.1, GatewayPorts option
-in /etc/ssh/sshd_config must be yes.
+A pure Python lite implementation of SSH Remote Port Forwarding, featured by
+non-blocking socket and event IO.
 
-However, end-to-end encryption may be already satisfied, and you definitely 
-want to forward as fast as possible, so you don't need a secured
-forwarding path, which is a waste. And if you don't want to or cannot
-change the configuration of sshd, but you still need the remote port to be
-listened at 0.0.0.0 in server. For both cases above, `report` kicks in.
+Basicly, SSH remote port forwarding is a very cheap way to get `Intranet
+Penetration`, and the forwarding path is secured! But there are a few
+things you might not like:
 
-![remote_port_forwarding](/remote_port_forwarding.png)
+* If you want to make the remote server listened at `0.0.0.0` other than
+`127.0.0.1`, `GatewayPorts` option in /etc/ssh/sshd_config must be a yes.
+You need sudo priviledge.
+* End-to-end encryption may be already satisfied, and you definitely 
+want to forward as quick as possible, so you don't need an extra level of
+encryption.
+* Tcp connection would be broken by any reason, and you desperately need
+reconnection mechanism, which is not provided by ssh.
 
-Normally, you should run server in backgroupd, like:
+So, portfly kicks in!
+
+# Usage
+
+## Start Server
 
 ``` shell
-$ nohup python3 report_server.py <server_listen_port> >> server.log &
+$ python portfly.py -s server_listen_ip:port
 ```
 
-The client comand line just mimics SSH remote port forwarding:
+## Start Client
 
 ``` shell
-$ python3 report_client.py [-x] public_port:target_host:target_port server_ip:server_port
+$ python portfly.py -c mapping_port:target_ip:port+server_ip:port
 ```
+
+The client cmd configuration is just like ssh. The extra `+` used above
+can leave the whole parameters unquoted.
+
+## Optional Parameters
+
+`--log`, `INFO` or `DEBUG`, default is `WARNING`.
 
 `-x`, to specify a very simple encryption in case you don't want to be naked
 completely.
