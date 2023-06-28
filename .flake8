@@ -1,0 +1,33 @@
+[flake8]
+format = %(path)s: %(row)d,%(col)d: %(code)s: %(text)s
+exclude =
+    .git,
+    .github,
+    .mypy_cache,
+    __pycache__,
+    README.md,
+    LICENSE
+ignore =
+    # E111: indentation is not a multiple of 4
+    E111,
+    # E127,E128: continuation line over/under-indented for visual indent
+    E127,
+    E128,
+    # multi-spaces before operator
+    E221,
+    # E225,E226,E227,E228: missing whitespace around somewhere
+    E225,
+    E226,
+    E227,
+    E228,
+    # E231: missing whitespace after ','
+    E231,
+    # E241: multiple spaces after ','
+    E241,
+    # E701: multiple statements on one line (colon)
+    E701,
+    # W391: blank line at end of file
+    W391,
+    # W503,W504: line break before binary operator
+    W503,
+    W504

@@ -9,7 +9,6 @@ Blog:     https://cs.pynote.net
 License:  MIT
 """
 import sys
-import os
 import socket
 import selectors
 import logging as log
@@ -88,7 +87,6 @@ class trafix():
             except BlockingIOError:
                 continue
 
-
     def recv_sk_nonblock_gen(self, sk):
         """ socket nonblocking recv generator,
             yield sid,type,msg """
@@ -104,13 +102,12 @@ class trafix():
                     if dlen >= mlen:
                         sid = int.from_bytes(data[4:8], 'big')
                         msg = dx(data[8:mlen]) if self.x else data[8:mlen]
-                        yield int.from_bytes(data[4:8],'big'),msg[:1],msg[1:]
+                        yield sid, msg[:1], msg[1:]
                         data = data[mlen:]
                     else:
                         break
             except BlockingIOError:
                 yield None, b'\x00', b''
-
 
     def recv_sk_nonblock(self, sk):
         """ socket nonblocking recv generator, one shot """
@@ -122,7 +119,6 @@ class trafix():
                 yield data
             except BlockingIOError:
                 return
-        
 
     def send_sk_nonblock(self, sid):
         sk, data = self.sdict[sid]
@@ -137,7 +133,6 @@ class trafix():
             pass
         return len(data)
 
-
     def flush(self):
         tunnel_left = self.gen_send.send((None,0))
         sk_left = 0
@@ -150,10 +145,9 @@ class trafix():
                 self.clean(sid)
         return tunnel_left + sk_left
 
-
     def __init__(self, sk, role, *argv):
         self.role = role  # 's':server or 'c':client
-        
+
         # set tunnel socket to nonblocking, init generators
         self.sk = sk
         self.sk.setblocking(False)
@@ -196,7 +190,6 @@ class trafix():
             nrclose_socket(self.pserv)
         log.warning('[%d] closed', self.port)
 
-
     def try_send_heartbeat(self):
         if self.heartbeat_max > 6:
             raise ValueError('heartbeat max is reached')
@@ -207,7 +200,6 @@ class trafix():
             self.heartbeat_time = now
             self.heartbeat_max += 1
 
-
     def update_sid(self):
         # sid 0 is used for heartbeat,
         # sid should be incremented sequentially to avoid conflict.
@@ -215,7 +207,6 @@ class trafix():
             self.sid = self.sid+1 if self.sid!=MAX_STREAM_ID else 1
             if self.sid not in self.sdict.keys():
                 break
-
 
     def clean(self, sid, sk=None):
         """ delete sid from sdict,
@@ -234,8 +225,6 @@ class trafix():
             self.sel.unregister(sk)
             self.unreg += 1
             log.debug('[%d] unreg %d', self.port, self.unreg)
-
-
 
     def loop(self):
         p = self.port
@@ -296,7 +285,7 @@ class trafix():
                                     self.sdict[sid] = [s, b'']
                                     self.kdict[s] = sid
                                 except OSError as e:
-                                    log.error('connect %s failed: %s',str(taddr), str(e))
+                                    log.error('connect %s failed: %s', str(self.target), str(e))
                                     self.gen_send.send((MSG_CD,sid))
                             # connection down
                             elif t == MSG_CD:
