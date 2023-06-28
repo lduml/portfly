@@ -410,8 +410,13 @@ def client_main(setting, saddr, x):
     th.join()
 
 
+_VER = 'portfly V0.20 by xinlin-z '\
+       'https://github.com/xinlin-z/portfly'
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('-V', '--version', action='version', version=_VER)
     parser.add_argument('--log', choices=('INFO','DEBUG'))
     parser.add_argument('-x', action='store_true',
                         help='apply simple encryption to traffic')
