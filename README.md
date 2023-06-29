@@ -1,10 +1,10 @@
-* [portfly](#portfly)
+* [Portfly](#Portfly)
 * [Usage](#Usage)
-    * [Start Server](#Start-Server)
-    * [Start Client](#Start-Client)
+    * [Server](#Server)
+    * [Client](#Client)
     * [Optional Parameters](#Optional-Parameters)
 
-# portfly
+# Portfly
 
 A pure Python lite implementation of SSH Remote Port Forwarding, featured by
 non-blocking socket and event IO.
@@ -17,29 +17,40 @@ things you might not like:
 `127.0.0.1`, `GatewayPorts` option in /etc/ssh/sshd_config must be a yes.
 You need sudo priviledge.
 * End-to-end encryption may be already satisfied, and you definitely 
-want to forward as quick as possible, so you don't need an extra level of
+want to forward data as quick as possible. You don't need an extra level of
 encryption.
-* Tcp connection would be broken by any reason, and you desperately need
-reconnection mechanism, which is not provided by ssh.
+* Tcp connection (ssh session) would be broken by any reason, and you
+desperately need a reconnection mechanism, which is not provided by ssh.
 
-So, portfly kicks in!
+If so, portfly kicks in!
 
 # Usage
 
-## Start Server
+```shell
+$ python portfly.py -h
+```
+
+## Server
+
+You can arbitrarily specify a listen ip and port in server side.
 
 ``` shell
 $ python portfly.py -s server_listen_ip:port
 ```
 
-## Start Client
+Server can be connected by multiple client, each client mapping port
+has a Process in server.
+
+## Client
+
+The client command line configuration is just like ssh remote port
+forwarding. The extra `+` can leave the whole parameters unquoted.
 
 ``` shell
 $ python portfly.py -c mapping_port:target_ip:port+server_ip:port
 ```
 
-The client cmd configuration is just like ssh. The extra `+` used above
-can leave the whole parameters unquoted.
+Each client process can map only one port to server.
 
 ## Optional Parameters
 
@@ -49,3 +60,4 @@ can leave the whole parameters unquoted.
 completely.
 
 Have Fun... ^____^
+
