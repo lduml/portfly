@@ -24,6 +24,8 @@ desperately need a reconnection mechanism, which is not provided by ssh.
 
 If so, portfly kicks in!
 
+![remote_port_forwarding](/remote_port_forwarding.png)
+
 # Usage
 
 ```shell
