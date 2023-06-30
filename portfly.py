@@ -411,7 +411,7 @@ _VER = 'portfly V0.20 by xinlin-z '\
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-V', '--version', action='version', version=_VER)
-    parser.add_argument('--log', choices=('INFO','DEBUG'))
+    parser.add_argument('--log', choices=('INFO','DEBUG'), default='WARNING')
     parser.add_argument('-x', action='store_true',
                         help='apply simple encryption to traffic')
     end_type = parser.add_mutually_exclusive_group(required=True)
@@ -420,9 +420,8 @@ if __name__ == '__main__':
     parser.add_argument('settings')
     args = parser.parse_args()
 
-    log_level = 'log.' + (args.log if args.log else 'WARNING')
     log.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s',
-                    level=eval(log_level))
+                    level=eval('log.'+args.log))
 
     # python portfly.py -s server_listen_ip:port
     if args.server:
