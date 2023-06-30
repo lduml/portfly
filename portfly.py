@@ -17,6 +17,7 @@ import base64
 import multiprocessing as mp
 import threading
 import time
+from typing import Iterator, Generator
 
 
 def cx(bmsg: bytes) -> bytes:
@@ -67,7 +68,8 @@ MSG_CD = b'\x04'
 class trafix():
     """ traffic exchanging class """
 
-    def send_sk_nonblock_gen(self, sk: socket.socket):
+    def send_sk_nonblock_gen(self, sk: socket.socket) \
+                    -> Generator[int, tuple[bytes|None,int], None]:
         """ socket nonblocking send generator """
         data = b''
         while True:
@@ -87,7 +89,8 @@ class trafix():
             except BlockingIOError:
                 continue
 
-    def recv_sk_nonblock_gen(self, sk: socket.socket):
+    def recv_sk_nonblock_gen(self, sk: socket.socket) \
+                    -> Iterator[tuple[int|None,bytes,bytes]]:
         """ socket nonblocking recv generator,
             yield sid,type,msg """
         data = b''
@@ -109,7 +112,7 @@ class trafix():
             except BlockingIOError:
                 yield None, b'\x00', b''
 
-    def recv_sk_nonblock(self, sk):
+    def recv_sk_nonblock(self, sk: socket.socket) -> Iterator[bytes]:
         """ socket nonblocking recv generator, one shot """
         while True:
             try:
@@ -120,7 +123,7 @@ class trafix():
             except BlockingIOError:
                 return
 
-    def send_sk_nonblock(self, sid):
+    def send_sk_nonblock(self, sid: int) -> int:
         sk, data = self.sdict[sid]
         try:
             while True:
@@ -134,6 +137,7 @@ class trafix():
         return len(data)
 
     def flush(self) -> int:
+        """ flush all sending socket, return left bytes number """
         tunnel_left = self.gen_send.send((None,0))
         sk_left = 0
         for sid in self.sdict.keys():
@@ -145,7 +149,7 @@ class trafix():
                 self.clean(sid)
         return tunnel_left + sk_left
 
-    def __init__(self, sk, role, *argv):
+    def __init__(self, sk: socket.socket, role: str, *argv) -> None:
         self.role = role  # 's':server or 'c':client
 
         # set tunnel socket to nonblocking, init generators
@@ -171,10 +175,11 @@ class trafix():
             self.heartbeat_time = time.time()
             self.heartbeat_max = 0
 
-        self.sdict = {}    # sid --> socket
-        self.kdict = {}    # socket --> sid
-        self.reg = 0
-        self.unreg = 0
+        # self.sdict: dict[int,list[socket.socket|bytes]] = {}
+        self.sdict = {}
+        self.kdict: dict[socket.socket,int] = {}    # socket --> sid
+        self.reg: int = 0
+        self.unreg: int = 0
 
         # event loop
         try:
@@ -190,7 +195,7 @@ class trafix():
             nrclose_socket(self.pserv)
         log.warning('[%d] closed', self.port)
 
-    def try_send_heartbeat(self):
+    def try_send_heartbeat(self) -> None:
         if self.heartbeat_max > 10:
             raise ValueError('heartbeat max is reached')
         now = time.time()
@@ -200,7 +205,7 @@ class trafix():
             self.heartbeat_time = now
             self.heartbeat_max += 1
 
-    def update_sid(self):
+    def update_sid(self) -> None:
         # sid 0 is used for heartbeat,
         # sid should be incremented sequentially to avoid conflict.
         while True:
@@ -208,7 +213,7 @@ class trafix():
             if self.sid not in self.sdict.keys():
                 break
 
-    def clean(self, sid, sk=None):
+    def clean(self, sid: int, sk: socket.socket|None = None) -> None:
         """ delete sid from sdict,
             delete sk from kdict,
             close socket,
@@ -226,7 +231,7 @@ class trafix():
             self.unreg += 1
             log.debug('[%d] unreg %d', self.port, self.unreg)
 
-    def event_pass(self, events):
+    def event_pass(self, events) -> None:
         p = self.port
         for fd,_ in events:
             # new connections in server role
@@ -309,7 +314,7 @@ class trafix():
                         break
                     self.gen_send.send((MSG_ND+data,sid))  # send data
 
-    def loop(self):
+    def loop(self) -> None:
         while True:
             # server is always passive, so it can be blocked forever...
             # but client can not, which needs to send heartbeat.
@@ -341,7 +346,7 @@ magic_bmsg = b'ask for REopening a PORT'
 magic_breply = b'Done'
 
 
-def server_main(saddr):
+def server_main(saddr: tuple[str,int]) -> None:
     serv = socket.create_server(saddr)
     log.warning('start portfly server at %s', str(saddr))
     while True:
@@ -371,7 +376,7 @@ def server_main(saddr):
             nrclose_socket(sk)
 
 
-def client_main(setting, saddr, x):
+def client_main(setting: str, saddr, x: bool) -> None:
     pub_port, host, port = setting.strip().split(':')
     serv_ip, serv_port = saddr.strip().split(':')
     serv_addr = (serv_ip, int(serv_port))
