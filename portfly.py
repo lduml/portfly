@@ -223,17 +223,14 @@ class trafix():
             if self.sid not in self.sdict.keys():
                 break
 
-    def clean(self, sid: int, sk: sk_t|None = None) -> None:
+    def clean(self, sid: int) -> None:
         """ delete sid from sdict,
             delete sk from kdict,
             close socket,
             unregister sk from selector. """
         assert len(self.sdict) == len(self.kdict)
-        _skb = self.sdict.pop(sid, None)
-        if sk:
-            assert sk is _skb.sk
-        else:
-            sk = _skb.sk
+        _skb = self.sdict.pop(sid)
+        sk = _skb.sk
         if sk:
             self.kdict.pop(sk, None)
             nrclose_socket(sk)
@@ -318,7 +315,7 @@ class trafix():
                     except OSError as e:
                         log.info('[%d] sid %d donw when recv, %s',p,sid,str(e))
                         self.gen_send.send((MSG_CD,sid))
-                        self.clean(sid, fd.fileobj)
+                        self.clean(sid)
                         break
                     except StopIteration:
                         break
