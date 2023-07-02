@@ -18,6 +18,7 @@ import multiprocessing as mp
 import threading
 import time
 from typing import Iterator, Generator
+from dataclasses import dataclass
 
 
 # type alias
@@ -71,6 +72,11 @@ MSG_CD = b'\x04'
 
 class trafix():
     """ traffic exchanging class """
+
+    @dataclass
+    class sk_buf:
+        sk: sk_t
+        buf: bytes
 
     def send_sk_nonblock_gen(self, sk: sk_t) \
                     -> Generator[int, tuple[bytes|None,int], None]:
@@ -128,14 +134,15 @@ class trafix():
                 return
 
     def send_sk_nonblock(self, sid: int) -> int:
-        sk, data = self.sdict[sid]
+        skb = self.sdict[sid]
+        data = skb.buf
         try:
             while True:
                 if len(data) == 0:
                     break
-                if (i:=sk.send(data[:SK_IO_CHUNK_LEN])) == -1:
+                if (i:=skb.sk.send(data[:SK_IO_CHUNK_LEN])) == -1:
                     raise ConnectionError('send_sk_nonblock send -1')
-                data = self.sdict[sid][1] = data[i:]
+                data = self.sdict[sid].buf = data[i:]
         except BlockingIOError:
             pass
         return len(data)
@@ -179,8 +186,7 @@ class trafix():
             self.heartbeat_time = time.time()
             self.heartbeat_max = 0
 
-        # self.sdict: dict[int,list[sk_t|bytes]] = {}
-        self.sdict = {}
+        self.sdict: dict[int, trafix.sk_buf] = {}
         self.kdict: dict[sk_t,int] = {}    # socket --> sid
         self.reg: int = 0
         self.unreg: int = 0
@@ -191,8 +197,8 @@ class trafix():
         except Exception as e:
             log.error('exception [%d]: %s', self.port, str(e))
             log.exception(e)
-            for s,_ in self.sdict.values():
-                nrclose_socket(s)
+            for skb in self.sdict.values():
+                nrclose_socket(skb.sk)
         # the end
         nrclose_socket(self.sk)
         if self.role == 's':
@@ -223,11 +229,11 @@ class trafix():
             close socket,
             unregister sk from selector. """
         assert len(self.sdict) == len(self.kdict)
-        _sk, _ = self.sdict.pop(sid, (None,None))
+        _skb = self.sdict.pop(sid, None)
         if sk:
-            assert sk is _sk
+            assert sk is _skb.sk
         else:
-            sk = _sk
+            sk = _skb.sk
         if sk:
             self.kdict.pop(sk, None)
             nrclose_socket(sk)
@@ -248,7 +254,7 @@ class trafix():
                 self.sel.register(s, selectors.EVENT_READ)
                 self.reg += 1
                 log.debug('[%d] reg %d', self.port, self.reg)
-                self.sdict[self.sid] = [s, b'']  # sid -> [sk,buffer]
+                self.sdict[self.sid] = trafix.sk_buf(s,b'')  # sid -> sk_buf
                 self.kdict[s] = self.sid
                 self.update_sid()
 
@@ -267,7 +273,7 @@ class trafix():
                                 self.sel.register(s, selectors.EVENT_READ)
                                 self.reg += 1
                                 log.debug('[%d] reg %d',self.port,self.reg)
-                                self.sdict[sid] = [s, b'']
+                                self.sdict[sid] = trafix.sk_buf(s, b'')
                                 self.kdict[s] = sid
                             except OSError as e:
                                 log.error('connect %s failed: %s', str(self.target), str(e))
@@ -290,7 +296,7 @@ class trafix():
                             assert t == MSG_ND
                             try:
                                 if sid in self.sdict.keys():
-                                    self.sdict[sid][1] += bmsg
+                                    self.sdict[sid].buf += bmsg
                                     self.send_sk_nonblock(sid)
                             except OSError:
                                 log.info('[%d] sid %d is closed while send', p, sid)
