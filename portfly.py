@@ -20,6 +20,10 @@ import time
 from typing import Iterator, Generator
 
 
+# type alias
+sk_t = socket.socket
+
+
 def cx(bmsg: bytes) -> bytes:
     r = random.randint
     m = r(0,255)
@@ -32,7 +36,7 @@ def dx(bmsg: bytes) -> bytes:
     return bytes([i^bmsg[0] for i in bmsg[1:len(bmsg)-bmsg[0]]])
 
 
-def nrclose_socket(sk: socket.socket) -> None:
+def nrclose_socket(sk: sk_t) -> None:
     """ non-raise close socket """
     if sk:
         try:
@@ -68,7 +72,7 @@ MSG_CD = b'\x04'
 class trafix():
     """ traffic exchanging class """
 
-    def send_sk_nonblock_gen(self, sk: socket.socket) \
+    def send_sk_nonblock_gen(self, sk: sk_t) \
                     -> Generator[int, tuple[bytes|None,int], None]:
         """ socket nonblocking send generator """
         data = b''
@@ -89,7 +93,7 @@ class trafix():
             except BlockingIOError:
                 continue
 
-    def recv_sk_nonblock_gen(self, sk: socket.socket) \
+    def recv_sk_nonblock_gen(self, sk: sk_t) \
                     -> Iterator[tuple[int|None,bytes,bytes]]:
         """ socket nonblocking recv generator,
             yield sid,type,msg """
@@ -112,7 +116,7 @@ class trafix():
             except BlockingIOError:
                 yield None, b'\x00', b''
 
-    def recv_sk_nonblock(self, sk: socket.socket) -> Iterator[bytes]:
+    def recv_sk_nonblock(self, sk: sk_t) -> Iterator[bytes]:
         """ socket nonblocking recv generator, one shot """
         while True:
             try:
@@ -149,7 +153,7 @@ class trafix():
                 self.clean(sid)
         return tunnel_left + sk_left
 
-    def __init__(self, sk: socket.socket, role: str, *argv) -> None:
+    def __init__(self, sk: sk_t, role: str, *argv) -> None:
         self.role = role  # 's':server or 'c':client
 
         # set tunnel socket to nonblocking, init generators
@@ -175,9 +179,9 @@ class trafix():
             self.heartbeat_time = time.time()
             self.heartbeat_max = 0
 
-        # self.sdict: dict[int,list[socket.socket|bytes]] = {}
+        # self.sdict: dict[int,list[sk_t|bytes]] = {}
         self.sdict = {}
-        self.kdict: dict[socket.socket,int] = {}    # socket --> sid
+        self.kdict: dict[sk_t,int] = {}    # socket --> sid
         self.reg: int = 0
         self.unreg: int = 0
 
@@ -213,7 +217,7 @@ class trafix():
             if self.sid not in self.sdict.keys():
                 break
 
-    def clean(self, sid: int, sk: socket.socket|None = None) -> None:
+    def clean(self, sid: int, sk: sk_t|None = None) -> None:
         """ delete sid from sdict,
             delete sk from kdict,
             close socket,
