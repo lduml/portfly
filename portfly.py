@@ -39,12 +39,11 @@ def dx(bmsg: bytes) -> bytes:
 
 def nrclose_socket(sk: sk_t) -> None:
     """ non-raise close socket """
-    if sk:
-        try:
-            sk.shutdown(socket.SHUT_RDWR)
-            sk.close()
-        except OSError:
-            return
+    try:
+        sk.shutdown(socket.SHUT_RDWR)
+        sk.close()
+    except OSError:
+        return
 
 
 SK_IO_CHUNK_LEN = 4096
@@ -76,7 +75,7 @@ class trafix():
     @dataclass
     class sk_buf:
         sk: sk_t
-        buf: bytes
+        buf: bytes = b''
 
     def send_sk_nonblock_gen(self, sk: sk_t) \
                     -> Generator[int, tuple[bytes|None,int], None]:
@@ -161,10 +160,10 @@ class trafix():
         return tunnel_left + sk_left
 
     def __init__(self, sk: sk_t, role: str, *argv) -> None:
-        self.role = role  # 's':server or 'c':client
+        self.role: str = role  # 's':server or 'c':client
 
         # set tunnel socket to nonblocking, init generators
-        self.sk = sk
+        self.sk: sk_t = sk
         self.sk.setblocking(False)
         self.gen_recv = self.recv_sk_nonblock_gen(sk)
         self.gen_send = self.send_sk_nonblock_gen(sk)
@@ -175,8 +174,8 @@ class trafix():
         self.sel.register(self.sk, selectors.EVENT_READ)
 
         # retrive argv and set accordingly
-        self.port = argv[1]
-        self.x = argv[2]
+        self.port: int = argv[1]
+        self.x: bool = argv[2]
         if self.role == 's':
             self.pserv = argv[0]  # no need to set pserv to nonblocking
             self.sid = 1          # sid, stream id
@@ -251,10 +250,9 @@ class trafix():
                 self.sel.register(s, selectors.EVENT_READ)
                 self.reg += 1
                 log.debug('[%d] reg %d', self.port, self.reg)
-                self.sdict[self.sid] = trafix.sk_buf(s,b'')  # sid -> sk_buf
+                self.sdict[self.sid] = trafix.sk_buf(s)
                 self.kdict[s] = self.sid
                 self.update_sid()
-
             # recv from tunnel
             elif fd.fileobj == self.sk:
                 while True:
@@ -270,7 +268,7 @@ class trafix():
                                 self.sel.register(s, selectors.EVENT_READ)
                                 self.reg += 1
                                 log.debug('[%d] reg %d',self.port,self.reg)
-                                self.sdict[sid] = trafix.sk_buf(s, b'')
+                                self.sdict[sid] = trafix.sk_buf(s)
                                 self.kdict[s] = sid
                             except OSError as e:
                                 log.error('connect %s failed: %s', str(self.target), str(e))
@@ -301,7 +299,6 @@ class trafix():
                                 self.clean(sid)
                     else:
                         break
-
             # recv from connections
             else:
                 try:
@@ -334,7 +331,6 @@ class trafix():
                     events = self.sel.select()
                 else:
                     events = self.sel.select(HEARTBEAT_INTV)
-
             # if no socket ready to be read,
             if len(events) == 0:
                 # it might be a chance to send heartbeat.
@@ -344,7 +340,6 @@ class trafix():
                 if bytes_left != 0:
                     time.sleep(0.1)
                 continue
-
             self.event_pass(events)
 
 
@@ -383,28 +378,26 @@ def server_main(saddr: tuple[str,int]) -> None:
             nrclose_socket(sk)
 
 
-def client_main(setting: str, saddr, x: bool) -> None:
-    pub_port, host, port = setting.strip().split(':')
-    serv_ip, serv_port = saddr.strip().split(':')
-    serv_addr = (serv_ip, int(serv_port))
+def client_main(setting: str, saddr: tuple[str,int], x: bool) -> None:
+    pub_port, thost, tport = setting.strip().split(':')
 
     while True:
         try:
-            sk = socket.create_connection(serv_addr)
+            sk = socket.create_connection(saddr)
             sk.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
             sk.sendall(cx(magic_bmsg) + b'\n')
             sk.sendall(cx(pub_port.encode()) + b'\n')
             sk.sendall(cx(str(int(x)).encode()) + b'\n')
             rf = sk.makefile('rb')
             if dx(rf.readline().strip()) == magic_breply:
-                log.warning('Connect server %s ok, port %s is ready.',
-                                                        serv_ip, pub_port)
+                log.warning('connect server %s ok, port %s is ready.',
+                                                        str(saddr), pub_port)
             else:
                 raise ValueError('magic_breply is not match')
-            #
-            target_addr = (host, int(port))
+            # start
+            taddr = (thost, int(tport))
             th = threading.Thread(target=trafix,
-                                  args=(sk,'c',target_addr,int(pub_port),x),
+                                  args=(sk,'c',taddr,int(pub_port),x),
                                   daemon=True)
             th.start()
             th.join()
@@ -444,6 +437,7 @@ if __name__ == '__main__':
     # python portfly.py -c mapping_port:target_ip:port+server_ip:port
     else:
         mapping, saddr = args.settings.split('+')
-        client_main(mapping, saddr, args.x)
+        addr, port = saddr.split(':')
+        client_main(mapping, (addr,int(port)), args.x)
 
 
