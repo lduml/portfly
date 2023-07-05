@@ -194,7 +194,7 @@ class trafix():
         try:
             self.loop()
         except Exception as e:
-            log.error('exception [%d]: %s', self.port, str(e))
+            log.error('[%d] exception: %s', self.port, str(e))
             log.exception(e)
             for skb in self.sdict.values():
                 nrclose_socket(skb.sk)
@@ -267,16 +267,16 @@ class trafix():
                                 s.setblocking(False)
                                 self.sel.register(s, selectors.EVENT_READ)
                                 self.reg += 1
-                                log.debug('[%d] reg %d',self.port,self.reg)
+                                log.debug('[%d] reg %d', p, self.reg)
                                 self.sdict[sid] = trafix.sk_buf(s)
                                 self.kdict[s] = sid
                             except OSError as e:
-                                log.error('connect %s failed: %s', str(self.target), str(e))
+                                log.error('[%d] connect %s failed: %s', p, str(self.target), str(e))
                                 self.gen_send.send((MSG_CD,sid))
                         # connection down
                         elif t == MSG_CD:
                             if sid in self.sdict.keys():
-                                log.info('[%d] close sid %d by peer',p,sid)
+                                log.info('[%d] close sid %d by peer', p, sid)
                                 self.clean(sid)
                         # heartbeat
                         elif t == MSG_HB:
@@ -355,21 +355,31 @@ def server_main(saddr: tuple[str,int]) -> None:
         sk, faddr = serv.accept()
         log.warning('accept from %s', str(faddr))
         sk.settimeout(2)
+        sk.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
         rf = sk.makefile('rb')
         try:
             if dx(rf.readline().strip()) == magic_bmsg:
-                # recv port
-                port = int(dx(rf.readline().strip()))
-                pserv = socket.create_server(('', port))
-                log.warning('create server at public port %d', port)
-                sk.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+                # recv mode
+                mode = dx(rf.readline().strip())
+                log.warning('mode %s', mode)
+                if mode == b'R':  # recv port
+                    port = int(dx(rf.readline().strip()))
+                    pserv = socket.create_server(('', port))
+                    log.warning('create server at public port %d', port)
+                else:  # recv thost and tport
+                    thost = dx(rf.readline().strip())
+                    tport = int(dx(rf.readline().strip()))
+                    log.warning('recv target addr %s:%s', thost, tport)
                 # recv x
                 x = eval((dx(rf.readline().strip())).decode())
                 log.warning('encryption %d', x)
                 sk.sendall(cx(magic_breply) + b'\n')
                 log.warning('launch process...')
-                mp.Process(target=trafix,
-                           args=(sk,'s',pserv,port,x)).start()
+                if mode == b'R':
+                    args = (sk, 's', pserv, port, x)
+                else:
+                    args = (sk, 'c', (thost,tport), -1, x)
+                mp.Process(target=trafix, args=args).start()
             else:
                 raise ValueError('magic bmsg error')
         except Exception as e:
@@ -378,15 +388,25 @@ def server_main(saddr: tuple[str,int]) -> None:
             nrclose_socket(sk)
 
 
-def client_main(setting: str, saddr: tuple[str,int], x: bool) -> None:
+def client_main(mode: str,
+                setting: str,
+                saddr: tuple[str,int], x: bool) -> None:
     pub_port, thost, tport = setting.strip().split(':')
 
     while True:
         try:
+            if mode == b'L':
+                pserv = socket.create_server(('', int(pub_port)))
+                log.warning('create server at port %s', pub_port)
             sk = socket.create_connection(saddr)
             sk.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
             sk.sendall(cx(magic_bmsg) + b'\n')
-            sk.sendall(cx(pub_port.encode()) + b'\n')
+            sk.sendall(cx(mode) + b'\n')
+            if mode == b'R':
+                sk.sendall(cx(pub_port.encode()) + b'\n')
+            else:
+                sk.sendall(cx(thost.encode()) + b'\n')
+                sk.sendall(cx(tport.encode()) + b'\n')
             sk.sendall(cx(str(int(x)).encode()) + b'\n')
             rf = sk.makefile('rb')
             if dx(rf.readline().strip()) == magic_breply:
@@ -395,10 +415,11 @@ def client_main(setting: str, saddr: tuple[str,int], x: bool) -> None:
             else:
                 raise ValueError('magic_breply is not match')
             # start
-            taddr = (thost, int(tport))
-            th = threading.Thread(target=trafix,
-                                  args=(sk,'c',taddr,int(pub_port),x),
-                                  daemon=True)
+            if mode == b'R':
+                args = (sk, 'c', (thost,int(tport)), -1, x)
+            else:
+                args = (sk, 's', pserv, int(pub_port), x)
+            th = threading.Thread(target=trafix, args=args, daemon=True)
             th.start()
             th.join()
         except Exception as e:
@@ -409,7 +430,7 @@ def client_main(setting: str, saddr: tuple[str,int], x: bool) -> None:
             time.sleep(4)
 
 
-_VER = 'portfly V0.20 by xinlin-z '\
+_VER = 'portfly V0.21 by xinlin-z '\
        'https://github.com/xinlin-z/portfly'
 
 
@@ -422,6 +443,8 @@ if __name__ == '__main__':
     end_type = parser.add_mutually_exclusive_group(required=True)
     end_type.add_argument('-s', '--server', action='store_true')
     end_type.add_argument('-c', '--client', action='store_true')
+    parser.add_argument('-L', action='store_true',
+                        help='local port forwarding')
     parser.add_argument('settings')
     args = parser.parse_args()
 
@@ -432,12 +455,15 @@ if __name__ == '__main__':
     if args.server:
         if args.x:
             print('-x is ignored in server side')
+        if args.L:
+            print('-L is ignored in server side')
         ip, port = args.settings.split(':')
         server_main((ip,int(port)))
     # python portfly.py -c mapping_port:target_ip:port+server_ip:port
     else:
         mapping, saddr = args.settings.split('+')
         addr, port = saddr.split(':')
-        client_main(mapping, (addr,int(port)), args.x)
+        client_main(b'L' if args.L else b'R',
+                    mapping, (addr,int(port)), args.x)
 
 
