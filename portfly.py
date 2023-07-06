@@ -9,6 +9,7 @@ Blog:     https://cs.pynote.net
 License:  MIT
 """
 import socket
+from socket import IPPROTO_TCP, TCP_NODELAY
 import selectors
 import logging as log
 import argparse
@@ -245,7 +246,7 @@ class trafix():
                 s, addr = self.pserv.accept()
                 self.gen_send.send((MSG_NC,self.sid))
                 log.info('[%d] accept %s, sid %d', p, str(addr), self.sid)
-                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+                s.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)
                 s.setblocking(False)             # set nonblocking
                 self.sel.register(s, selectors.EVENT_READ)
                 self.reg += 1
@@ -261,9 +262,11 @@ class trafix():
                         # new connection in client role
                         if t == MSG_NC:
                             try:
-                                s = socket.create_connection(self.target, timeout=2)
-                                log.info('[%d] connect target %s ok, sid %d', p, str(self.target), sid)
-                                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+                                s = socket.create_connection(self.target,
+                                                             timeout=2)
+                                log.info('[%d] connect target %s ok, sid %d',
+                                         p, str(self.target), sid)
+                                s.setsockopt(IPPROTO_TCP, TCP_NODELAY, True)
                                 s.setblocking(False)
                                 self.sel.register(s, selectors.EVENT_READ)
                                 self.reg += 1
@@ -271,7 +274,8 @@ class trafix():
                                 self.sdict[sid] = trafix.sk_buf(s)
                                 self.kdict[s] = sid
                             except OSError as e:
-                                log.error('[%d] connect %s failed: %s', p, str(self.target), str(e))
+                                log.error('[%d] connect %s failed: %s',
+                                          p, str(self.target), str(e))
                                 self.gen_send.send((MSG_CD,sid))
                         # connection down
                         elif t == MSG_CD:
@@ -281,7 +285,8 @@ class trafix():
                         # heartbeat
                         elif t == MSG_HB:
                             if self.role == 's':
-                                log.info('[%d] recv and send heartbeat, sid %d', p, sid)
+                                log.info('[%d] recv & send heartbeat, sid %d',
+                                         p, sid)
                                 self.gen_send.send((MSG_HB,sid))
                             else:
                                 log.info('[%d] recv heartbeat', p)
@@ -294,7 +299,8 @@ class trafix():
                                     self.sdict[sid].buf += bmsg
                                     self.send_sk_nonblock(sid)
                             except OSError:
-                                log.info('[%d] sid %d is closed while send', p, sid)
+                                log.info('[%d] sid %d is closed while send',
+                                         p, sid)
                                 self.gen_send.send((MSG_CD,sid))
                                 self.clean(sid)
                     else:
@@ -378,7 +384,7 @@ def server_main(saddr: tuple[str,int]) -> None:
                 if mode == b'R':
                     args = (sk, 's', pserv, port, x)
                 else:
-                    args = (sk, 'c', (thost,tport), -1, x)
+                    args = (sk, 'c', (thost,tport), -1, x)  # type: ignore
                 mp.Process(target=trafix, args=args).start()
             else:
                 raise ValueError('magic bmsg error')
@@ -388,7 +394,7 @@ def server_main(saddr: tuple[str,int]) -> None:
             nrclose_socket(sk)
 
 
-def client_main(mode: str,
+def client_main(mode: bytes,
                 setting: str,
                 saddr: tuple[str,int], x: bool) -> None:
     pub_port, thost, tport = setting.strip().split(':')
@@ -418,7 +424,7 @@ def client_main(mode: str,
             if mode == b'R':
                 args = (sk, 'c', (thost,int(tport)), -1, x)
             else:
-                args = (sk, 's', pserv, int(pub_port), x)
+                args = (sk, 's', pserv, int(pub_port), x)  # type: ignore
             th = threading.Thread(target=trafix, args=args, daemon=True)
             th.start()
             th.join()
